@@ -10,7 +10,14 @@ const Local = (() => {
   ];
   const supported = typeof navigator !== "undefined" && !!navigator.gpu;
   const isPhone = () => matchMedia("(pointer: coarse)").matches || (navigator.deviceMemory && navigator.deviceMemory < 8);
-  const defaultModel = () => (isPhone() ? "Hermes-3-Llama-3.2-3B" : "Hermes-3-Llama-3.1-8B");
+  const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  // iPhones give a browser tab little memory: use the smallest model there.
+  const defaultModel = () => (isIOS() ? "Llama-3.2-1B-Instruct" : isPhone() ? "Hermes-3-Llama-3.2-3B" : "Hermes-3-Llama-3.1-8B");
+
+  // Crash guard: if the tab dies while a model loads (out of memory), the next start sees this mark.
+  const GUARD = "stage-local-loading";
+  const mark = id => { try { id ? localStorage.setItem(GUARD, id) : localStorage.removeItem(GUARD); } catch {} };
+  function crashed() { try { const v = localStorage.getItem(GUARD); localStorage.removeItem(GUARD); return v; } catch { return null; } }
   const known = id => MODELS.some(m => m.id === id);
 
   // WebGPU can exist without a usable graphics chip; check for a real adapter once.
@@ -34,6 +41,7 @@ const Local = (() => {
     if (!(await ready())) throw new Error("This device can't run the built-in AI (no WebGPU graphics). Switch to Cloud in Settings.");
     const id = await fullId(base);
     progressCb = onProgress;
+    if (loadedId !== id) mark(id);
     if (loadedId === id) return engine;
     if (loading && loading.id === id) return loading.p;
     const p = (async () => {
@@ -47,11 +55,13 @@ const Local = (() => {
         await engine.reload(id);
       }
       loadedId = id;
+      mark(null);
       return engine;
     })();
     loading = { id, p };
     try { return await p; }
     catch (e) {
+      mark(null);
       const msg = String(e && e.message || e);
       if (/memory|OOM|allocate|device lost/i.test(msg)) throw new Error("This device ran out of memory for that model. Pick a smaller built-in model in Settings.");
       if (/Failed to fetch|NetworkError|network error|ERR_/i.test(msg)) throw new Error("The built-in AI couldn't download. Check your internet and try again.");
@@ -95,5 +105,5 @@ const Local = (() => {
     return full;
   }
 
-  return { MODELS, supported, ready, defaultModel, known, load, isCached, chat };
+  return { MODELS, supported, ready, defaultModel, known, load, isCached, chat, crashed };
 })();

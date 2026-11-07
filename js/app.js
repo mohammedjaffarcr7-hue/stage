@@ -29,7 +29,7 @@ How you work:
   const isAsst = ch => ch && ch.kind === "assistant";
 
   const DEFAULTS = {
-    provider: Local.supported ? "local" : "cloud",
+    provider: "cloud", // works instantly everywhere; Built-in is an opt-in offline mode
     keys: { openrouter: "", gemini: "", custom: "" },
     models: { local: "", cloud: "", openrouter: "", gemini: "gemini-2.5-flash", custom: "" },
     customBase: "",
@@ -148,11 +148,19 @@ How you work:
   async function saveSettings() { await DB.put("kv", S, "settings"); tabs && tabs.postMessage("settings"); }
 
   // Settings are re-read from storage so every open tab uses the latest choice.
-  async function loadSettings() {
+  async function loadSettings(startup = false) {
     const saved = await DB.get("kv", "settings");
     S = JSON.parse(JSON.stringify(DEFAULTS));
     if (saved) S = { ...S, ...saved, keys: { ...S.keys, ...saved.keys }, models: { ...S.models, ...saved.models } };
     let fix = false;
+    // Built-in was the default for a while; keep it only for people who picked it themselves.
+    if (saved && !saved.v3) { if (S.provider === "local" && !S.localChosen) S.provider = "cloud"; S.v3 = true; fix = true; }
+    // The tab crashed while the built-in AI was loading: go back to Cloud and say why.
+    const bad = startup && Local.crashed();
+    if (bad) {
+      S.provider = "cloud"; S.localChosen = false; S.localCrashed = bad; fix = true;
+      setTimeout(() => toast("The built-in AI was too big for this device, so Stage switched to Cloud. You can pick a smaller built-in model in Settings.", 9000), 600);
+    }
     // No usable graphics chip: use Cloud so chatting just works.
     if (S.provider === "local" && !(await Local.ready())) { S.provider = "cloud"; fix = !!saved; }
     // Settings from before Built-in/Cloud existed, with no key: move to the no-setup default.
@@ -895,7 +903,8 @@ How you work:
       const cur = S.models.local || Local.defaultModel();
       const can = await Local.ready();
       box.innerHTML = can ? `
-        <p class="hint" style="margin-top:0">An open AI that runs entirely on this device: no key, no account, and your chats never leave it. It downloads once, then works even offline. Less clever than Cloud; great for chat and roleplay.</p>
+        <p class="hint" style="margin-top:0">An open AI that runs entirely on this device: no key, no account, and your chats never leave it. It downloads once, then works even offline. Less clever than Cloud, and it needs a lot of memory: on phones pick the smallest model.</p>
+        ${S.localCrashed ? `<p class="notice-plain">Last time, <b>${esc((Local.MODELS.find(m => S.localCrashed.startsWith(m.id)) || { name: "that model" }).name)}</b> was too big for this device and the page restarted. Choose a smaller model below.</p>` : ""}
         <label class="field"><span>Built-in model</span>
           <select id="s_local">${Local.MODELS.map(m => `<option value="${m.id}" ${m.id === cur ? "selected" : ""}>${esc(m.name)} · ${esc(m.size)} · ${esc(m.note)}</option>`).join("")}</select></label>
         <p class="hint" id="localState">Checking…</p>
@@ -928,6 +937,7 @@ How you work:
 
     $$('input[name="prov"]').forEach(r => r.onchange = async () => {
       S.provider = r.value === "own" ? (OWN.includes(S.lastOwn) ? S.lastOwn : "openrouter") : r.value;
+      if (r.value === "local") S.localChosen = true;
       if (OWN.includes(S.provider)) S.lastOwn = S.provider;
       await saveSettings(); renderProv();
     });
@@ -1001,7 +1011,7 @@ How you work:
   // ---------- start ----------
   (async () => {
     if (!(await DB.get("chars", "assistant"))) await DB.put("chars", { ...ASSISTANT, created: Date.now() });
-    await loadSettings();
+    await loadSettings(true);
     route();
   })();
 })();

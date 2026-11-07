@@ -10,8 +10,8 @@ Settings → **AI** has three choices. All are free.
 
 | Choice | What it is | Setup |
 |---|---|---|
-| **Built-in** (default) | An open model (Hermes 3) that runs **on your device** in the browser. No key, no account, chats never leave the device, works offline after the first download. | None. It downloads once with your first message: about 4.9 GB on a laptop (8B), 2.3 GB on a phone (3B). Needs WebGPU: Chrome or Edge on most laptops and Android, Safari on a recent iPhone. |
-| **Cloud** | Smarter free models through Stage's own server (a Supabase Edge Function, `supabase/functions/stage-ai`). No key on any device. Used automatically on devices that can't run Built-in. | One time, by the owner: put a free OpenRouter key in Supabase as the secret `OPENROUTER_API_KEY` (see below). Only free models are allowed, so it can't cost money. |
+| **Built-in** (opt-in, offline) | An open model (Hermes 3) that runs **on your device** in the browser. No key, no account, chats never leave the device, works offline after the first download. | None. Choose it in Settings; it downloads once: about 4.9 GB on a laptop (8B), 2.3 GB on Android (3B), 0.9 GB on iPhone (1B). If a model is too big and the page restarts, Stage switches back to Cloud and says so. Needs WebGPU: Chrome or Edge on most laptops and Android, Safari on a recent iPhone. |
+| **Cloud** (default) | Smarter free models through Stage's own server (a Supabase Edge Function, `supabase/functions/stage-ai`). No key on any device. Works instantly on every device. | One time, by the owner: put a free OpenRouter key in Supabase as the secret `OPENROUTER_API_KEY` (see below). Only free models are allowed, so it can't cost money. |
 | **Own key** | OpenRouter, Google Gemini or any OpenAI-compatible server, with your own key. | Paste your key. |
 
 The app adds no filters of its own. How open a character is depends on the model.
