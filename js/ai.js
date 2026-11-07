@@ -57,12 +57,30 @@ const AI = (() => {
     }
   }
 
+  // Best free models first: big, smart chat models, then smaller ones.
+  // Ranking uses name patterns because the free list changes often.
+  const RANK = [
+    /deepseek.*(v3|chat)/, /qwen3.*(235|480|coder)/, /kimi|moonshot/, /glm-4/, /deepseek/, /llama-4-maverick/, /gemini/,
+    /gpt-oss-120b/, /qwen3/, /llama-3\.3-70b/, /mistral-(medium|large|small-3)/, /hermes|nous/, /llama-4/, /gemma-3-27b/, /qwen/, /mistral/,
+  ];
+  function rankFree(list) {
+    const score = m => { const i = RANK.findIndex(r => r.test(m.id.toLowerCase())); return i < 0 ? RANK.length : i; };
+    const slow = m => /(^|[-/])r1|reason|think/i.test(m.id) ? 1 : 0; // reasoning models are slow to start talking
+    return list.slice().sort((a, b) => slow(a) - slow(b) || score(a) - score(b));
+  }
+
   async function errorText(r) {
     let t = "";
     try { t = await r.text(); const j = JSON.parse(t); t = (j.error && (j.error.message || j.error)) || j.message || t; } catch {}
     if (r.status === 401 || r.status === 403) return "The key was refused. Check it in Settings. " + t;
     if (r.status === 429) return "Free limit reached for now. Wait a minute or pick another free model. " + t;
     return "Error " + r.status + ": " + String(t).slice(0, 300);
+  }
+  async function httpError(r) {
+    const e = new Error(await errorText(r));
+    e.status = r.status;
+    e.retry = r.status === 429 || r.status === 404 || r.status === 400 || r.status >= 500; // worth trying another model
+    return e;
   }
 
   // messages: [{role: "system"|"user"|"assistant", content}]
@@ -92,7 +110,7 @@ const AI = (() => {
       };
       const url = `${PROVIDERS.gemini.base}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(s.keys.gemini || "")}`;
       const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
-      if (!r.ok) throw new Error(await errorText(r));
+      if (!r.ok) throw await httpError(r);
       let blocked = "";
       await readSSE(r, j => {
         if (j.promptFeedback && j.promptFeedback.blockReason) blocked = j.promptFeedback.blockReason;
@@ -114,14 +132,14 @@ const AI = (() => {
       method: "POST", headers, signal,
       body: JSON.stringify({ model, messages, temperature, max_tokens, stream: true }),
     });
-    if (!r.ok) throw new Error(await errorText(r));
+    if (!r.ok) throw await httpError(r);
     await readSSE(r, j => {
-      if (j.error) { const e = new Error(j.error.message || "Model error"); e.isAIError = true; throw e; }
+      if (j.error) { const e = new Error(j.error.message || "Model error"); e.isAIError = true; e.retry = true; throw e; }
       const d = j.choices && j.choices[0] && j.choices[0].delta;
       if (d) push(d.content);
     });
     return full;
   }
 
-  return { PROVIDERS, listModels, chat };
+  return { PROVIDERS, listModels, chat, rankFree };
 })();

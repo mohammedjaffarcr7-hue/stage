@@ -1,6 +1,6 @@
 # Stage
 
-A private AI roleplay app that installs on your phone. Create characters with their own personality, picture and voice, chat with them, or talk hands-free like a phone call. **It costs nothing to run.**
+A private AI app that installs on your phone: a smart, frank **Assistant** for any question, plus **characters** for roleplay, each with their own personality, picture, memory and voice. Chat by text or talk hands-free like a phone call. **It costs nothing to run.**
 
 Everything (characters, chats, keys) is saved only on your device. There is no server and no account.
 
@@ -12,7 +12,7 @@ Everything (characters, chats, keys) is saved only on your device. There is no s
 | **Google Gemini** | Free tier, no card | https://aistudio.google.com/apikey → Create API key → paste it in Settings. The content filter can be set to Off there. |
 | **Custom** | Free | Any OpenAI-compatible server: Groq (free key at console.groq.com, address `https://api.groq.com/openai/v1`), or a model on your own computer with Ollama / LM Studio. |
 
-Free models have daily limits. If one says "limit reached", wait or switch to another free model. Each character can also use its own model (Edit character → Advanced).
+Leave **Model** empty on OpenRouter and the app picks the smartest free model, and switches to the next one automatically when a model is busy. On Gemini, `gemini-2.5-pro` is the smartest and `gemini-2.5-flash` the fastest. Each character can also use its own model (Edit character → Advanced).
 
 How open a character is depends on the model you pick. The app adds no filters of its own.
 
@@ -33,6 +33,12 @@ Stage uses your phone's built-in voices and speech recognition, so they're free.
 
 After changing any file, bump `VERSION` in `sw.js` so installed phones pick up the update.
 
+## Smart features
+
+- **Assistant:** a general chatbot that answers directly and frankly, with formatted answers (lists, tables, code). Give it your own instructions by tapping its name.
+- **Memory:** every character has a *Memory* box for facts they must never forget. Long chats are summarised automatically, so older events aren't lost.
+- **Thinking models:** the hidden reasoning some free models write is removed from replies.
+
 ## Tips
 
 - Write rich personalities: looks, way of talking, goals, secrets. Use `{{user}}` for you and `{{char}}` for the character.
@@ -45,11 +51,12 @@ After changing any file, bump `VERSION` in `sw.js` so installed phones pick up t
 ```
 index.html              the app
 css/app.css             styles
-js/app.js               screens, chat, talk mode
+js/app.js               screens, chat, assistant, memory, talk mode
 js/ai.js                OpenRouter / Gemini / custom AI connections
 js/voice.js             phone voices and speech recognition
 js/db.js                on-device storage
 sw.js                   offline cache (bump VERSION on each update)
 manifest.webmanifest    install name, colours, icons
 icons/                  app icons (icon.svg is the source)
+DESIGN.md               the design system
 ```

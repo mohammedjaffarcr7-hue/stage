@@ -11,6 +11,23 @@ Write only {{char}}'s replies: actions and descriptions in *asterisks*, speech a
 Be vivid, creative and proactive: react to what {{user}} says and does, move the story forward, and keep {{char}}'s personality, way of speaking and memories consistent.
 Keep replies to a natural length for a conversation unless the scene calls for more. Reply in the language {{user}} writes in.`;
 
+  // Instructions for the general assistant (a normal chatbot, not a roleplay character).
+  const ASSISTANT_RULES =
+`You are {{char}}, a highly capable, candid and open-minded personal assistant for {{user}}.
+How you work:
+- Think the problem through carefully before answering. For maths, logic, code and multi-step questions, reason step by step and check your result.
+- Answer the question that was asked, directly and completely. Lead with the answer, then the useful detail.
+- Be frank and treat {{user}} as a capable adult: give real opinions when asked, discuss any topic openly, and skip disclaimers, moralising and filler.
+- When you are unsure or a fact may be out of date, say so plainly instead of guessing.
+- Use Markdown when it helps (short headings, lists, tables, code blocks); keep casual replies conversational.
+- Reply in the language {{user}} writes in.`;
+
+  const ASSISTANT = {
+    id: "assistant", kind: "assistant", name: "Assistant", tagline: "Ask anything", hue: 22,
+    persona: "", memory: "", scenario: "", greeting: "", examples: "", avatar: "", voiceURI: "", rate: 1, pitch: 1, model: "", created: 0,
+  };
+  const isAsst = ch => ch && ch.kind === "assistant";
+
   const DEFAULTS = {
     provider: "openrouter",
     keys: { openrouter: "", gemini: "", custom: "" },
@@ -58,6 +75,55 @@ Keep replies to a natural length for a conversation unless the scene calls for m
     return h.replace(/\n/g, "<br>");
   }
 
+  // Small Markdown renderer for assistant answers (escapes everything first).
+  function md(src) {
+    const blocks = [];
+    let t = String(src).replace(/```[^\n`]*\n?([\s\S]*?)(?:```|$)/g, (m, code) => {
+      blocks.push(`<pre><code>${esc(code.replace(/\n$/, ""))}</code></pre>`);
+      return `\n\u0000${blocks.length - 1}\u0000\n`;
+    });
+    const inline = s => esc(s)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, "$1<em>$2</em>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    const out = [];
+    let list = null, para = [];
+    const flushP = () => { if (para.length) { out.push(`<p>${para.map(inline).join("<br>")}</p>`); para = []; } };
+    const flushL = () => { if (list) { out.push(`<${list.tag}>${list.items.map(i => `<li>${inline(i)}</li>`).join("")}</${list.tag}>`); list = null; } };
+    const lines = t.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      let m;
+      if ((m = line.match(/^\u0000(\d+)\u0000$/))) { flushP(); flushL(); out.push(blocks[+m[1]]); continue; }
+      if (!line.trim()) { flushP(); flushL(); continue; }
+      if ((m = line.match(/^(#{1,4})\s+(.*)/))) { flushP(); flushL(); out.push(`<h4>${inline(m[2])}</h4>`); continue; }
+      if (/^\s*([-*_])\s*\1\s*\1[\s\1]*$/.test(line)) { flushP(); flushL(); out.push("<hr>"); continue; }
+      if (/^\|.*\|\s*$/.test(line) && /^\|[\s:|-]+\|\s*$/.test(lines[i + 1] || "")) {
+        flushP(); flushL();
+        const row = (l, tag) => "<tr>" + l.trim().replace(/^\||\|$/g, "").split("|").map(c => `<${tag}>${inline(c.trim())}</${tag}>`).join("") + "</tr>";
+        let h = `<div class="tbl"><table><thead>${row(line, "th")}</thead><tbody>`;
+        i += 2;
+        while (i < lines.length && /^\|.*\|\s*$/.test(lines[i])) h += row(lines[i++], "td");
+        i--;
+        out.push(h + "</tbody></table></div>"); continue;
+      }
+      if ((m = line.match(/^\s*(?:[-*•]|(\d+)[.)])\s+(.*)/))) {
+        flushP();
+        const tag = m[1] ? "ol" : "ul";
+        if (!list || list.tag !== tag) { flushL(); list = { tag, items: [] }; }
+        list.items.push(m[2]); continue;
+      }
+      if ((m = line.match(/^>\s?(.*)/))) { flushP(); flushL(); out.push(`<blockquote>${inline(m[1])}</blockquote>`); continue; }
+      flushL(); para.push(line);
+    }
+    flushP(); flushL();
+    return out.join("");
+  }
+
+  // Hide the "thinking" part some free reasoning models write before the answer.
+  const stripThink = t => String(t).replace(/<think>[\s\S]*?(<\/think>|$)/gi, "").replace(/^\s+/, "");
+
   function avatar(ch, cls = "") {
     if (ch.avatar) return `<span class="av ${cls}" style="background-image:url('${ch.avatar}')" aria-hidden="true"></span>`;
     const ini = (ch.name || "?").trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase();
@@ -103,7 +169,11 @@ Keep replies to a natural length for a conversation unless the scene calls for m
   const go = h => { if (location.hash === h) route(); else location.hash = h; };
   addEventListener("hashchange", route);
 
+  // Each navigation gets a number; a screen that finishes loading after the user moved on is not drawn.
+  let nav = 0;
+  const stale = t => t !== nav;
   async function route() {
+    nav++;
     Voice.stop();
     if (busy) busy.abort();
     const [, view, id] = (location.hash || "#/").split("/");
@@ -117,20 +187,35 @@ Keep replies to a natural length for a conversation unless the scene calls for m
 
   // ---------- home ----------
   async function viewHome() {
+    const t = nav;
     const chars = (await DB.all("chars")).sort((a, b) => (b.lastUsed || b.created) - (a.lastUsed || a.created));
     const chats = await DB.all("chats");
     const last = {};
     chats.forEach(c => { if (!last[c.charId] || c.updated > last[c.charId].updated) last[c.charId] = c; });
+    if (stale(t)) return;
+
+    const asst = chars.find(isAsst) || ASSISTANT;
+    const cast = chars.filter(c => !isAsst(c));
+    const hr = new Date().getHours();
+    const hello = hr < 5 ? "Up late" : hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
+    const al = last[asst.id];
 
     app.innerHTML = `
       <header class="bar">
-        <h1 class="brand">Stage</h1>
+        <span class="brand" translate="no">${ICON.logo} Stage</span>
         <a class="icon-btn" href="#/settings" aria-label="Settings">${ICON.gear}</a>
       </header>
       <main class="page">
-        ${keyReady() ? "" : `<a class="notice" href="#/settings"><strong>Connect a free AI to start.</strong> Takes a minute, no card needed. <span aria-hidden="true">→</span></a>`}
+        <h1 class="hello">${hello}${S.userName ? ", " + esc(S.userName) : ""}.</h1>
+        ${keyReady() ? "" : `<a class="notice" href="#/settings"><strong>Connect a free AI to start.</strong> It takes a minute and needs no card. <span aria-hidden="true">→</span></a>`}
+        <a class="ask" href="#/open/${asst.id}">
+          <span class="ask-row">${avatar(asst, "sm")}<span class="ask-title">${esc(asst.name)}</span>${al ? `<span class="char-time">${ago(al.updated)}</span>` : ""}</span>
+          <span class="ask-box">Ask anything…<span class="ask-go" aria-hidden="true">${ICON.send}</span></span>
+        </a>
+
+        <div class="sec-head"><h2>Characters</h2><a class="btn sm" href="#/char/new">${ICON.plus} New</a></div>
         <ul class="char-list">
-          ${chars.map(ch => {
+          ${cast.map(ch => {
             const lc = last[ch.id];
             const lm = lc && lc.messages[lc.messages.length - 1];
             const preview = lm ? Voice.clean(fill(lm.content, ch), false) : ch.tagline;
@@ -141,28 +226,29 @@ Keep replies to a natural length for a conversation unless the scene calls for m
             </a></li>`;
           }).join("")}
         </ul>
-        ${chars.length ? "" : `<p class="empty">No characters yet. Create one, or add two samples to try.</p>
-          <button class="btn ghost wide" id="addSamples">Add sample characters</button>`}
-        <a class="btn primary wide" href="#/char/new">${ICON.plus} New character</a>
+        ${cast.length ? "" : `<div class="empty-card"><p>Create someone to talk to: a friend, a rival, a whole story world. Or start with two ready-made characters.</p>
+          <div class="btn-row"><a class="btn primary" href="#/char/new">Create a character</a><button class="btn" id="addSamples">Add 2 samples</button></div></div>`}
       </main>`;
     $("#addSamples")?.addEventListener("click", async () => {
-      for (const s of SAMPLES) await DB.put("chars", { ...s, id: uid(), avatar: "", voiceURI: "", rate: 1, pitch: 1, model: "", created: Date.now() });
-      viewHome();
+      for (const s of SAMPLES) await DB.put("chars", { ...s, id: uid(), avatar: "", memory: "", voiceURI: "", rate: 1, pitch: 1, model: "", created: Date.now() });
+      if (!stale(t)) route();
     });
   }
 
   // ---------- character editor ----------
   async function viewEditor(id) {
+    const t = nav;
     const isNew = !id || id === "new";
     const ch = isNew
       ? { id: uid(), name: "", tagline: "", persona: "", scenario: "", greeting: "", examples: "", avatar: "", hue: Math.floor(Math.random() * 360), voiceURI: "", rate: 1, pitch: 1, model: "", created: Date.now() }
       : await DB.get("chars", id);
+    if (stale(t)) return;
     if (!ch) return go("#/");
 
     app.innerHTML = `
       <header class="bar">
         <a class="icon-btn" href="${isNew ? "#/" : "#/open/" + ch.id}" aria-label="Back">${ICON.back}</a>
-        <h1>${isNew ? "New character" : "Edit character"}</h1>
+        <h1>${isNew ? "New character" : isAsst(ch) ? "Assistant" : "Edit character"}</h1>
         <button class="btn primary sm" id="save">Save</button>
       </header>
       <main class="page form">
@@ -176,15 +262,22 @@ Keep replies to a natural length for a conversation unless the scene calls for m
         </div>
 
         <label class="field"><span>Name</span><input id="f_name" value="${esc(ch.name)}" placeholder="e.g. Luna" autocomplete="off" required></label>
-        <label class="field"><span>Short description <small>shown in your list</small></span><input id="f_tagline" value="${esc(ch.tagline)}" placeholder="e.g. A witty vampire bartender"></label>
+        <label class="field"><span>Short description <small>shown in your list</small></span><input id="f_tagline" value="${esc(ch.tagline)}" placeholder="e.g. A witty vampire bartender" autocomplete="off"></label>
+        ${isAsst(ch) ? `
+        <label class="field"><span>Custom instructions <small>optional</small></span>
+          <textarea id="f_persona" rows="5" dir="auto" placeholder="How should it answer you? e.g. Be blunt. Explain like a friend. Always give the Arabic too…">${esc(ch.persona)}</textarea></label>` : `
         <label class="field"><span>Personality and background</span>
-          <textarea id="f_persona" rows="6" dir="auto" placeholder="Who are they? How do they look, talk and behave? What do they want? The more detail, the better they play.">${esc(ch.persona)}</textarea></label>
+          <textarea id="f_persona" rows="6" dir="auto" placeholder="Who are they? How do they look, talk and behave? What do they want? The more detail, the better they play.">${esc(ch.persona)}</textarea></label>`}
+        <label class="field"><span>Memory <small>facts they always remember</small></span>
+          <textarea id="f_memory" rows="3" dir="auto" placeholder="e.g. {{user}} is my best friend since childhood. We live in Dubai. I owe {{user}} a favour…">${esc(ch.memory || "")}</textarea></label>
+        <div ${isAsst(ch) ? "hidden" : ""}>
         <label class="field"><span>Scenario <small>optional</small></span>
           <textarea id="f_scenario" rows="3" dir="auto" placeholder="Where and how does the story start? Use {{user}} for you.">${esc(ch.scenario)}</textarea></label>
         <label class="field"><span>First message <small>optional</small></span>
           <textarea id="f_greeting" rows="4" dir="auto" placeholder="How they open the conversation. Use *asterisks* for actions.">${esc(ch.greeting)}</textarea></label>
         <label class="field"><span>Example lines <small>optional</small></span>
           <textarea id="f_examples" rows="3" dir="auto" placeholder="{{char}}: A line that shows how they speak.">${esc(ch.examples)}</textarea></label>
+        </div>
 
         <h2 class="section">Voice</h2>
         ${Voice.supported.tts ? `
@@ -202,7 +295,7 @@ Keep replies to a natural length for a conversation unless the scene calls for m
             <input id="f_model" value="${esc(ch.model)}" placeholder="${esc(S.models[S.provider] || "default")}" autocomplete="off" spellcheck="false"></label>
         </details>
 
-        ${isNew ? "" : `<button class="btn danger wide" id="del">Delete character</button>`}
+        ${isNew || isAsst(ch) ? "" : `<button class="btn danger wide" id="del">Delete character</button>`}
       </main>`;
 
     // voices
@@ -236,6 +329,7 @@ Keep replies to a natural length for a conversation unless the scene calls for m
       Object.assign(ch, {
         name, tagline: $("#f_tagline").value.trim(), persona: $("#f_persona").value.trim(), scenario: $("#f_scenario").value.trim(),
         greeting: $("#f_greeting").value.trim(), examples: $("#f_examples").value.trim(), model: $("#f_model").value.trim(),
+        memory: $("#f_memory").value.trim(),
       });
       if (sel) Object.assign(ch, { voiceURI: sel.value, rate: +$("#f_rate").value, pitch: +$("#f_pitch").value });
       await DB.put("chars", ch);
@@ -265,58 +359,109 @@ Keep replies to a natural length for a conversation unless the scene calls for m
     location.replace("#/chat/" + chat.id);
   }
 
-  function buildMessages(ch, chat, upto) {
-    const parts = [fill(S.rules || DEFAULT_RULES, ch)];
-    if (ch.persona) parts.push(`About ${ch.name}:\n${fill(ch.persona, ch)}`);
-    if (ch.scenario) parts.push(`Scenario:\n${fill(ch.scenario, ch)}`);
-    if (S.userPersona) parts.push(`About ${S.userName || "the user"}:\n${fill(S.userPersona, ch)}`);
-    if (ch.examples) parts.push(`Examples of how ${ch.name} talks:\n${fill(ch.examples, ch)}`);
-    const sys = { role: "system", content: parts.join("\n\n") };
-    const hist = chat.messages.slice(0, upto ?? chat.messages.length);
-    const out = [];
-    let budget = +S.contextChars || 30000;
-    for (let i = hist.length - 1; i >= 0; i--) {
-      const m = hist[i];
-      const content = fill(m.content, ch);
-      budget -= content.length;
-      if (budget < 0 && out.length) break;
-      out.unshift({ role: m.role, content });
+  // Index of the first message that still fits in the context budget.
+  function fitStart(ch, hist) {
+    let budget = +S.contextChars || 30000, i = hist.length;
+    while (i > 0) {
+      budget -= fill(hist[i - 1].content, ch).length;
+      if (budget < 0 && i < hist.length) break;
+      i--;
     }
-    return [sys, ...out];
+    return i;
+  }
+
+  function buildMessages(ch, chat, upto) {
+    const asst = isAsst(ch);
+    const parts = [fill(asst ? ASSISTANT_RULES : (S.rules || DEFAULT_RULES), ch)];
+    if (asst) parts.push(`Today is ${new Date().toLocaleDateString("en-GB", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}.`);
+    if (ch.persona) parts.push(asst ? `${S.userName || "The user"}'s instructions for you:\n${fill(ch.persona, ch)}` : `About ${ch.name}:\n${fill(ch.persona, ch)}`);
+    if (!asst && ch.scenario) parts.push(`Scenario:\n${fill(ch.scenario, ch)}`);
+    if (S.userPersona) parts.push(`About ${S.userName || "the user"}:\n${fill(S.userPersona, ch)}`);
+    if (ch.memory) parts.push(`Things ${ch.name} always remembers:\n${fill(ch.memory, ch)}`);
+    if (!asst && ch.examples) parts.push(`Examples of how ${ch.name} talks:\n${fill(ch.examples, ch)}`);
+    const hist = chat.messages.slice(0, upto ?? chat.messages.length);
+    const start = Math.max(fitStart(ch, hist), 0);
+    if (chat.summary && start > 0) parts.push(`Story so far (summary of earlier messages):\n${chat.summary}`);
+    const out = hist.slice(start).map(m => ({ role: m.role, content: fill(m.content, ch) }));
+    return [{ role: "system", content: parts.join("\n\n") }, ...out];
+  }
+
+  // Long chats: summarise messages that no longer fit, so nothing important is forgotten.
+  async function remember(ch, chat, model) {
+    const start = fitStart(ch, chat.messages);
+    const from = chat.summaryUpto || 0;
+    if (start - from < 6) return;
+    const text = chat.messages.slice(from, start).map(m => `${m.role === "user" ? (S.userName || "User") : ch.name}: ${fill(m.content, ch)}`).join("\n\n");
+    try {
+      const summary = await AI.chat({
+        settings: { ...S, temperature: 0.3, maxTokens: 900 }, model, onToken: () => {},
+        messages: [
+          { role: "system", content: "You keep the memory of a long conversation. Write a compact summary in the conversation's language: key events, decisions, facts about each person, relationships, promises, open threads and the current situation. Bullet points, no commentary." },
+          { role: "user", content: (chat.summary ? `Earlier summary:\n${chat.summary}\n\n` : "") + `New messages to add:\n${text}` },
+        ],
+      });
+      if (stripThink(summary).trim()) { chat.summary = stripThink(summary).trim(); chat.summaryUpto = start; await DB.put("chats", chat); }
+    } catch { /* memory is best-effort */ }
+  }
+
+  let freeList = null;
+  async function freeModels() {
+    if (!freeList) freeList = AI.rankFree(await AI.listModels(S));
+    return freeList;
   }
 
   async function pickModel(ch) {
     if (ch.model) return ch.model;
     if (S.models[S.provider]) return S.models[S.provider];
     if (S.provider !== "openrouter") throw new Error("Choose a model in Settings first.");
-    const list = await AI.listModels(S);
-    const pref = ["deepseek", "llama-3.3-70b", "mistral", "qwen", "gemma"];
-    const m = pref.map(p => list.find(x => x.id.includes(p))).find(Boolean) || list[0];
-    if (!m) throw new Error("No free models are available right now.");
-    S.models.openrouter = m.id; await saveSettings();
-    return m.id;
+    const list = await freeModels();
+    if (!list.length) throw new Error("No free models are available right now. Try again later or switch to Gemini in Settings.");
+    return list[0].id;
   }
 
   // Ask the AI for the reply at position `index` (a new message, or a regeneration).
+  // On OpenRouter "automatic" mode, a busy or broken free model is swapped for the next best one.
   async function generate(ch, chat, { index, mode = "new", onToken, onSpeaker } = {}) {
     if (!keyReady()) throw new Error("Connect a free AI in Settings first.");
-    const model = await pickModel(ch);
+    let model = await pickModel(ch);
+    const auto = S.provider === "openrouter" && !ch.model && !S.models.openrouter;
     let msgs;
     if (mode === "continue") {
       msgs = buildMessages(ch, chat, index + 1);
       msgs.push({ role: "user", content: `(Continue ${ch.name}'s last reply exactly where it stopped. Do not repeat it.)` });
     } else msgs = buildMessages(ch, chat, index);
     busy = new AbortController();
+    const tried = new Set();
     try {
-      const text = await AI.chat({ settings: S, model, messages: msgs, signal: busy.signal, onToken: t => { onToken && onToken(t); onSpeaker && onSpeaker.feed(t); } });
-      return text.trim();
+      for (;;) {
+        tried.add(model);
+        let got = false;
+        try {
+          const text = await AI.chat({
+            settings: S, model, messages: msgs, signal: busy.signal,
+            onToken: t => { const v = stripThink(t); if (!v) return; got = true; onToken && onToken(v); onSpeaker && onSpeaker.feed(v); },
+          });
+          const clean = stripThink(text).trim();
+          remember(ch, chat, model);
+          return clean;
+        } catch (e) {
+          if (!auto || got || e.name === "AbortError" || !e.retry) throw e;
+          const next = (await freeModels()).find(m => !tried.has(m.id));
+          if (!next || tried.size >= 4) throw e;
+          model = next.id;
+          freeList = [next, ...freeList.filter(m => m.id !== next.id)];
+        }
+      }
     } finally { busy = null; }
   }
 
   async function viewChat(chatId) {
+    const t = nav;
     const chat = await DB.get("chats", chatId);
+    if (stale(t)) return;
     if (!chat) return go("#/");
     const ch = await DB.get("chars", chat.charId);
+    if (stale(t)) return;
     if (!ch) return go("#/");
     ch.lastUsed = Date.now(); DB.put("chars", ch);
     let autoSpeak = S.autoSpeak;
@@ -336,11 +481,11 @@ Keep replies to a natural length for a conversation unless the scene calls for m
         <a href="#/char/${ch.id}">${ICON.edit} Edit character</a>
       </div>
       <main class="msgs" id="msgs" aria-live="polite"></main>
-      <form class="composer" id="composer">
+      <form class="composer" id="composer"><div class="composer-box">
         ${Voice.supported.stt ? `<button type="button" class="icon-btn" id="dict" aria-label="Dictate">${ICON.mic}</button>` : ""}
-        <textarea id="input" rows="1" dir="auto" placeholder="Message ${esc(ch.name)}…" enterkeyhint="send" aria-label="Message"></textarea>
+        <textarea id="input" rows="1" dir="auto" placeholder="${isAsst(ch) ? "Ask anything…" : "Message " + esc(ch.name) + "…"}" enterkeyhint="send" aria-label="Message"></textarea>
         <button class="send" id="send" aria-label="Send">${ICON.send}</button>
-      </form>`;
+      </div></form>`;
 
     const msgsEl = $("#msgs"), input = $("#input"), sendBtn = $("#send");
     const nearBottom = () => msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 120;
@@ -348,14 +493,15 @@ Keep replies to a natural length for a conversation unless the scene calls for m
     const save = () => { chat.updated = Date.now(); return DB.put("chats", chat); };
     const voiceOpts = () => ({ voiceURI: ch.voiceURI, rate: ch.rate, pitch: ch.pitch, skipActions: S.skipActions });
 
+    const render1 = t => (isAsst(ch) ? md : format)(fill(t, ch));
     function msgHTML(m, i) {
       const last = i === chat.messages.length - 1;
       const isAI = m.role === "assistant";
       const alts = m.alts && m.alts.length > 1;
-      return `<div class="msg ${isAI ? "ai" : "me"} ${openMsg === m.id ? "open" : ""}" data-i="${i}">
-        ${isAI ? avatar(ch, "xs") : ""}
+      return `<div class="msg ${isAI ? "ai" : "me"} ${isAI && isAsst(ch) ? "doc" : ""} ${openMsg === m.id ? "open" : ""}" data-i="${i}">
+        ${isAI && !isAsst(ch) ? avatar(ch, "xs") : ""}
         <div class="bubble-wrap">
-          <div class="bubble" dir="auto" tabindex="0">${format(fill(m.content, ch)) || '<span class="typing"><i></i><i></i><i></i></span>'}</div>
+          <div class="bubble" dir="auto" tabindex="0">${m.content ? render1(m.content) : '<span class="typing" aria-label="Writing…"><i></i><i></i><i></i></span>'}</div>
           <div class="acts">
             ${isAI ? `<button data-a="speak" aria-label="Read aloud">${ICON.speaker}</button>` : ""}
             <button data-a="copy" aria-label="Copy">${ICON.copy}</button>
@@ -371,9 +517,11 @@ Keep replies to a natural length for a conversation unless the scene calls for m
     }
     function render(keepScroll) {
       const st = msgsEl.scrollTop;
-      msgsEl.innerHTML = (ch.scenario ? `<p class="scene" dir="auto">${format(fill(ch.scenario, ch))}</p>` : "") +
+      msgsEl.innerHTML = (ch.scenario && !isAsst(ch) ? `<p class="scene" dir="auto">${format(fill(ch.scenario, ch))}</p>` : "") +
         chat.messages.map(msgHTML).join("") +
-        (chat.messages.length ? "" : `<p class="empty">Say something to start the story.</p>`);
+        (chat.messages.length ? "" : isAsst(ch)
+          ? `<div class="welcome"><h2>What's on your mind?</h2><div class="chips">${["Explain something hard, simply", "Help me write a message", "Plan my week", "Give me your honest opinion on…"].map(t => `<button class="chip" data-chip="${esc(t)}">${esc(t)}</button>`).join("")}</div></div>`
+          : `<p class="empty">Say something to start the story.</p>`);
       if (keepScroll) msgsEl.scrollTop = st; else toBottom();
     }
     function setBusy(on) {
@@ -395,7 +543,7 @@ Keep replies to a natural length for a conversation unless the scene calls for m
           onSpeaker: spk && { feed: t => spk.feed(t) },
           onToken: t => {
             const stick = nearBottom();
-            const b = bubble(i); if (b) b.innerHTML = format(fill(base + (base ? " " : "") + t, ch));
+            const b = bubble(i); if (b) b.innerHTML = render1(base + (base ? " " : "") + t);
             if (stick) toBottom();
           },
         });
@@ -440,10 +588,12 @@ Keep replies to a natural length for a conversation unless the scene calls for m
 
     // Message actions
     msgsEl.onclick = async e => {
+      const chip = e.target.closest("[data-chip]");
+      if (chip) { const t = chip.dataset.chip; if (t.endsWith("…")) { input.value = t.slice(0, -1) + " "; input.focus(); grow(); } else send(t); return; }
       const msg = e.target.closest(".msg"); if (!msg) return;
       const i = +msg.dataset.i, m = chat.messages[i];
       const btn = e.target.closest("button[data-a]");
-      if (!btn) { if (e.target.closest(".bubble")) { openMsg = openMsg === m.id ? null : m.id; $$(".msg.open", msgsEl).forEach(x => x !== msg && x.classList.remove("open")); msg.classList.toggle("open", openMsg === m.id); } return; }
+      if (!btn) { if (e.target.closest(".bubble") && !e.target.closest("a, pre, .tbl")) { openMsg = openMsg === m.id ? null : m.id; $$(".msg.open", msgsEl).forEach(x => x !== msg && x.classList.remove("open")); msg.classList.toggle("open", openMsg === m.id); } return; }
       if (busy) return toast("Wait for the reply to finish.");
       const a = btn.dataset.a;
       if (a === "speak") Voice.say(fill(m.content, ch), voiceOpts());
@@ -667,8 +817,8 @@ Keep replies to a natural length for a conversation unless the scene calls for m
     function renderProv() {
       const p = S.provider, info = P[p];
       const help = {
-        openrouter: `<ol class="steps"><li>Open <a href="${info.keyUrl}" target="_blank" rel="noopener">openrouter.ai/keys</a> and sign in (Google works, no card).</li><li>Tap <b>Create key</b>, copy it and paste it below.</li><li>Only models marked <b>free</b> are listed, so it costs nothing. Free models have a daily message limit.</li></ol>`,
-        gemini: `<ol class="steps"><li>Open <a href="${info.keyUrl}" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and sign in with Google.</li><li>Tap <b>Create API key</b>, copy it and paste it below.</li><li>The free tier has a daily limit. Google may use free-tier chats to improve its products.</li></ol>`,
+        openrouter: `<ol class="steps"><li>Open <a href="${info.keyUrl}" target="_blank" rel="noopener">openrouter.ai/keys</a> and sign in (Google works, no card).</li><li>Tap <b>Create key</b>, copy it and paste it below.</li><li>Only models marked <b>free</b> are listed, so it costs nothing. Free models have a daily message limit.</li><li>Leave <b>Model</b> empty: the app picks the smartest free model and switches automatically when one is busy.</li></ol>`,
+        gemini: `<ol class="steps"><li>Open <a href="${info.keyUrl}" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and sign in with Google.</li><li>Tap <b>Create API key</b>, copy it and paste it below.</li><li>Model: <b>gemini-2.5-pro</b> is the smartest (fewer free messages a day); <b>gemini-2.5-flash</b> is fast with more free messages.</li><li>The free tier has a daily limit. Google may use free-tier chats to improve its products.</li></ol>`,
         custom: `<p class="hint">Any OpenAI-compatible server: for example Groq (free key at console.groq.com, address <code>https://api.groq.com/openai/v1</code>), or a model on your own computer with Ollama (<code>http://your-computer:11434/v1</code>) or LM Studio.</p>`,
       }[p];
       box.innerHTML = `${help}
@@ -676,7 +826,7 @@ Keep replies to a natural length for a conversation unless the scene calls for m
         <label class="field"><span>API key ${p === "custom" ? "<small>if the server needs one</small>" : ""}</span>
           <input id="s_key" type="password" value="${esc(S.keys[p])}" placeholder="Paste key" autocomplete="off" spellcheck="false"></label>
         <label class="field"><span>Model</span>
-          <span class="combo"><input id="s_model" list="modelList" value="${esc(S.models[p])}" placeholder="${p === "openrouter" ? "Picked for you if empty" : "Model name"}" autocomplete="off" spellcheck="false">
+          <span class="combo"><input id="s_model" list="modelList" value="${esc(S.models[p])}" placeholder="${p === "openrouter" ? "Automatic: smartest free model…" : "Model name…"}" autocomplete="off" spellcheck="false">
           <button class="btn ghost sm" id="loadModels" type="button">Load list</button></span>
           <datalist id="modelList"></datalist></label>
         <select id="modelSel" class="model-sel" hidden aria-label="Available models"></select>
@@ -755,13 +905,15 @@ Keep replies to a natural length for a conversation unless the scene calls for m
     $("#wipe").onclick = async () => {
       if (!confirm("Erase all characters, chats, keys and settings on this device?")) return;
       await DB.clear("chars"); await DB.clear("chats"); await DB.clear("kv");
-      S = JSON.parse(JSON.stringify(DEFAULTS)); go("#/");
+      S = JSON.parse(JSON.stringify(DEFAULTS));
+      await DB.put("chars", { ...ASSISTANT, created: Date.now() }); go("#/");
     };
   }
 
   // ---------- icons ----------
   const svg = p => `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
   const ICON = {
+    logo: '<svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><circle cx="13" cy="14" r="8" fill="var(--accent)"/><circle cx="20" cy="18" r="8" fill="none" stroke="currentColor" stroke-width="2.2"/></svg>',
     gear: svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
     back: svg('<path d="M15 18l-6-6 6-6"/>'),
     plus: svg('<path d="M12 5v14M5 12h14"/>'),
@@ -782,6 +934,7 @@ Keep replies to a natural length for a conversation unless the scene calls for m
 
   // ---------- start ----------
   (async () => {
+    if (!(await DB.get("chars", "assistant"))) await DB.put("chars", { ...ASSISTANT, created: Date.now() });
     const saved = await DB.get("kv", "settings");
     S = JSON.parse(JSON.stringify(DEFAULTS));
     if (saved) S = { ...S, ...saved, keys: { ...S.keys, ...saved.keys }, models: { ...S.models, ...saved.models } };
