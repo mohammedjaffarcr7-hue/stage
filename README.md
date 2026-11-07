@@ -4,17 +4,24 @@ A private AI app that installs on your phone: a smart, frank **Assistant** for a
 
 Everything (characters, chats, keys) is saved only on your device. There is no server and no account.
 
-## Free AI: pick one
+## AI: works the moment you open it
 
-| Service | Cost | How |
+Settings → **AI** has three choices. All are free.
+
+| Choice | What it is | Setup |
 |---|---|---|
-| **OpenRouter** (default) | Free models, no card | Sign in at https://openrouter.ai/keys → Create key → paste it in **Settings**. Tap **Load list** to see the free models. |
-| **Google Gemini** | Free tier, no card | https://aistudio.google.com/apikey → Create API key → paste it in Settings. The content filter can be set to Off there. |
-| **Custom** | Free | Any OpenAI-compatible server: Groq (free key at console.groq.com, address `https://api.groq.com/openai/v1`), or a model on your own computer with Ollama / LM Studio. |
+| **Built-in** (default) | An open model (Hermes 3) that runs **on your device** in the browser. No key, no account, chats never leave the device, works offline after the first download. | None. It downloads once with your first message: about 4.9 GB on a laptop (8B), 2.3 GB on a phone (3B). Needs WebGPU: Chrome or Edge on most laptops and Android, Safari on a recent iPhone. |
+| **Cloud** | Smarter free models through Stage's own server (a Supabase Edge Function, `supabase/functions/stage-ai`). No key on any device. Used automatically on devices that can't run Built-in. | One time, by the owner: put a free OpenRouter key in Supabase as the secret `OPENROUTER_API_KEY` (see below). Only free models are allowed, so it can't cost money. |
+| **Own key** | OpenRouter, Google Gemini or any OpenAI-compatible server, with your own key. | Paste your key. |
 
-Leave **Model** empty on OpenRouter and the app picks the smartest free model, and switches to the next one automatically when a model is busy. On Gemini, `gemini-2.5-pro` is the smartest and `gemini-2.5-flash` the fastest. Each character can also use its own model (Edit character → Advanced).
+The app adds no filters of its own. How open a character is depends on the model.
 
-How open a character is depends on the model you pick. The app adds no filters of its own.
+### Switching on Cloud (once)
+1. Make a free key at https://openrouter.ai/keys (sign in with Google, no card).
+2. Open https://supabase.com/dashboard/project/hamzzogevroexssapgcr/functions/secrets
+3. Add a secret named `OPENROUTER_API_KEY` with the key as its value, and save.
+
+The relay only answers this site (`mohammedjaffarcr7-hue.github.io` and `localhost:8765`) and only allows `:free` models.
 
 ## Free voices
 
@@ -52,7 +59,11 @@ After changing any file, bump `VERSION` in `sw.js` so installed phones pick up t
 index.html              the app
 css/app.css             styles
 js/app.js               screens, chat, assistant, memory, talk mode
-js/ai.js                OpenRouter / Gemini / custom AI connections
+js/ai.js                Built-in / Cloud / own-key AI connections
+js/local.js             built-in AI (runs the model on the device)
+js/local-worker.js      runs the built-in model off the main thread
+vendor/web-llm.js       WebLLM 0.2.86 (Apache-2.0), the on-device AI engine
+supabase/functions/     the Cloud relay (Supabase Edge Function)
 js/voice.js             phone voices and speech recognition
 js/db.js                on-device storage
 sw.js                   offline cache (bump VERSION on each update)

@@ -198,6 +198,11 @@ body:has(.msgs) { overflow: hidden; }
   color: var(--ink); text-decoration: none; text-align: start; cursor: pointer; font-size: 15px; }
 .menu button:hover, .menu a:hover { background: var(--line); }
 
+.loading-ai { color: var(--muted); font-size: 14px; }
+.progress { height: 6px; border-radius: 999px; background: var(--surface2); overflow: hidden; margin: -8px 0 16px; }
+.progress span { display: block; height: 100%; background: var(--accent); transform: scaleX(0); transform-origin: left; transition: transform .3s var(--ease); }
+.notice-plain { padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r); color: var(--body); margin: 0 0 18px; }
+
 /* sheet */
 .sheet-bg { position: fixed; inset: 0; z-index: 20; background: rgb(0 0 0 / .6); display: flex; align-items: flex-end; justify-content: center; }
 .sheet { width: 100%; max-width: 560px; max-height: 80dvh; overflow-y: auto; overscroll-behavior: contain; background: var(--surface); border-radius: var(--r-lg) var(--r-lg) 0 0;

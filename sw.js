@@ -1,6 +1,6 @@
 // Bump VERSION whenever you deploy changes so phones pick them up.
-const VERSION = "stage-v2";
-const SHELL = ["./", "index.html", "css/app.css", "js/db.js", "js/ai.js", "js/voice.js", "js/app.js",
+const VERSION = "stage-v3";
+const SHELL = ["./", "index.html", "css/app.css", "js/db.js", "js/local.js", "js/local-worker.js", "js/ai.js", "js/voice.js", "js/app.js",
   "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", e => {

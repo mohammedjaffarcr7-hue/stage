@@ -1,15 +1,32 @@
 // AI providers. All of them can be used for free:
+//  - Built-in: an open model running on this device (see local.js). No key.
+//  - Cloud: free OpenRouter models through Stage's own Supabase relay. No key on the device.
 //  - OpenRouter: free key (no card), models whose id ends in ":free".
 //  - Google Gemini: free key from Google AI Studio.
 //  - Custom: any OpenAI-compatible server (Groq free tier, Ollama / LM Studio on your computer, etc.).
 const AI = (() => {
+  // Stage's relay (supabase/functions/stage-ai). The anon key is public by design.
+  const CLOUD = {
+    base: "https://hamzzogevroexssapgcr.supabase.co/functions/v1/stage-ai",
+    anon: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhhbXp6b2dldnJvZXhzc2FwZ2NyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM5OTQ0MjgsImV4cCI6MjEwOTU3MDQyOH0.huMfR3qFOKqT9l6O9jHv1EkAwJJi7O25TaVwv3xfvYM",
+  };
+  const cloudHeaders = () => ({ Authorization: "Bearer " + CLOUD.anon, apikey: CLOUD.anon });
+
   const PROVIDERS = {
+    local: { name: "Built-in" },
+    cloud: { name: "Cloud" },
     openrouter: { name: "OpenRouter (free models)", base: "https://openrouter.ai/api/v1", keyUrl: "https://openrouter.ai/keys" },
     gemini: { name: "Google Gemini (free tier)", base: "https://generativelanguage.googleapis.com/v1beta", keyUrl: "https://aistudio.google.com/apikey" },
     custom: { name: "Custom (OpenAI-compatible)", base: "", keyUrl: "" },
   };
 
   async function listModels(s) {
+    if (s.provider === "local") return Local.MODELS.map(m => ({ id: m.id, name: `${m.name} (${m.size})` }));
+    if (s.provider === "cloud") {
+      const r = await fetch(CLOUD.base + "/models", { headers: cloudHeaders() });
+      if (!r.ok) throw await httpError(r);
+      return (await r.json()).data;
+    }
     if (s.provider === "openrouter") {
       const r = await fetch(PROVIDERS.openrouter.base + "/models");
       if (!r.ok) throw new Error("Could not load models (" + r.status + ")");
@@ -72,6 +89,10 @@ const AI = (() => {
   async function errorText(r) {
     let t = "";
     try { t = await r.text(); const j = JSON.parse(t); t = (j.error && (j.error.message || j.error)) || j.message || t; } catch {}
+    if (r.url.startsWith(CLOUD.base)) {
+      if (r.status === 503) return "Cloud mode isn't switched on yet. Use Built-in for now, or finish the one-time Cloud setup (see Settings).";
+      if (r.status === 429) return "The free cloud limit is used up for now. Try again later, or switch to Built-in in Settings.";
+    }
     if (r.status === 401 || r.status === 403) return "The key was refused. Check it in Settings. " + t;
     if (r.status === 429) return "Free limit reached for now. Wait a minute or pick another free model. " + t;
     return "Error " + r.status + ": " + String(t).slice(0, 300);
@@ -84,9 +105,10 @@ const AI = (() => {
   }
 
   // messages: [{role: "system"|"user"|"assistant", content}]
-  async function chat({ settings: s, model, messages, onToken, signal }) {
+  async function chat({ settings: s, model, messages, onToken, onStatus, signal }) {
     const temperature = +s.temperature;
     const max_tokens = +s.maxTokens;
+    if (s.provider === "local") return Local.chat({ model, messages, temperature, max_tokens: Math.min(max_tokens, 700), onToken, onStatus, signal });
     let full = "";
     const push = t => { if (t) { full += t; onToken(full); } };
 
@@ -123,10 +145,11 @@ const AI = (() => {
       return full;
     }
 
-    const base = s.provider === "openrouter" ? PROVIDERS.openrouter.base : (s.customBase || "").replace(/\/$/, "");
+    const cloud = s.provider === "cloud";
+    const base = cloud ? CLOUD.base : s.provider === "openrouter" ? PROVIDERS.openrouter.base : (s.customBase || "").replace(/\/$/, "");
     const key = s.keys[s.provider];
-    const headers = { "Content-Type": "application/json" };
-    if (key) headers.Authorization = "Bearer " + key;
+    const headers = { "Content-Type": "application/json", ...(cloud ? cloudHeaders() : {}) };
+    if (key && !cloud) headers.Authorization = "Bearer " + key;
     if (s.provider === "openrouter") { headers["X-Title"] = "Stage"; headers["HTTP-Referer"] = location.origin; }
     const r = await fetch(base + "/chat/completions", {
       method: "POST", headers, signal,

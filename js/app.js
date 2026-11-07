@@ -29,9 +29,9 @@ How you work:
   const isAsst = ch => ch && ch.kind === "assistant";
 
   const DEFAULTS = {
-    provider: "openrouter",
+    provider: Local.supported ? "local" : "cloud",
     keys: { openrouter: "", gemini: "", custom: "" },
-    models: { openrouter: "", gemini: "gemini-2.5-flash", custom: "" },
+    models: { local: "", cloud: "", openrouter: "", gemini: "gemini-2.5-flash", custom: "" },
     customBase: "",
     temperature: 0.9,
     maxTokens: 700,
@@ -146,7 +146,9 @@ How you work:
   };
 
   async function saveSettings() { await DB.put("kv", S, "settings"); }
-  const keyReady = () => S.provider === "custom" ? !!S.customBase : !!S.keys[S.provider];
+  const keyReady = () => S.provider === "local" ? Local.supported : S.provider === "cloud" ? true
+    : S.provider === "custom" ? !!S.customBase : !!S.keys[S.provider];
+  const isAutoFree = () => S.provider === "openrouter" || S.provider === "cloud";
 
   function resizeImage(file, size = 320) {
     return new Promise((res, rej) => {
@@ -207,7 +209,7 @@ How you work:
       </header>
       <main class="page">
         <h1 class="hello">${hello}${S.userName ? ", " + esc(S.userName) : ""}.</h1>
-        ${keyReady() ? "" : `<a class="notice" href="#/settings"><strong>Connect a free AI to start.</strong> It takes a minute and needs no card. <span aria-hidden="true">→</span></a>`}
+        ${keyReady() ? "" : `<a class="notice" href="#/settings"><strong>Choose an AI to start.</strong> Your own key is missing in Settings. <span aria-hidden="true">→</span></a>`}
         <a class="ask" href="#/open/${asst.id}">
           <span class="ask-row">${avatar(asst, "sm")}<span class="ask-title">${esc(asst.name)}</span>${al ? `<span class="char-time">${ago(al.updated)}</span>` : ""}</span>
           <span class="ask-box">Ask anything…<span class="ask-go" aria-hidden="true">${ICON.send}</span></span>
@@ -361,7 +363,7 @@ How you work:
 
   // Index of the first message that still fits in the context budget.
   function fitStart(ch, hist) {
-    let budget = +S.contextChars || 30000, i = hist.length;
+    let budget = S.provider === "local" ? Math.min(+S.contextChars || 30000, 7000) : (+S.contextChars || 30000), i = hist.length;
     while (i > 0) {
       budget -= fill(hist[i - 1].content, ch).length;
       if (budget < 0 && i < hist.length) break;
@@ -404,16 +406,17 @@ How you work:
     } catch { /* memory is best-effort */ }
   }
 
-  let freeList = null;
+  let freeList = null, freeFor = "";
   async function freeModels() {
-    if (!freeList) freeList = AI.rankFree(await AI.listModels(S));
+    if (!freeList || freeFor !== S.provider) { freeList = AI.rankFree(await AI.listModels(S)); freeFor = S.provider; }
     return freeList;
   }
 
   async function pickModel(ch) {
-    if (ch.model) return ch.model;
+    if (S.provider === "local") return Local.known(ch.model) ? ch.model : (S.models.local || Local.defaultModel());
+    if (ch.model && !Local.known(ch.model)) return ch.model;
     if (S.models[S.provider]) return S.models[S.provider];
-    if (S.provider !== "openrouter") throw new Error("Choose a model in Settings first.");
+    if (!isAutoFree()) throw new Error("Choose a model in Settings first.");
     const list = await freeModels();
     if (!list.length) throw new Error("No free models are available right now. Try again later or switch to Gemini in Settings.");
     return list[0].id;
@@ -421,10 +424,10 @@ How you work:
 
   // Ask the AI for the reply at position `index` (a new message, or a regeneration).
   // On OpenRouter "automatic" mode, a busy or broken free model is swapped for the next best one.
-  async function generate(ch, chat, { index, mode = "new", onToken, onSpeaker } = {}) {
-    if (!keyReady()) throw new Error("Connect a free AI in Settings first.");
+  async function generate(ch, chat, { index, mode = "new", onToken, onSpeaker, onStatus } = {}) {
+    if (!keyReady()) throw new Error(S.provider === "local" ? "This browser can't run the built-in AI. Switch to Cloud in Settings." : "Add your key in Settings first.");
     let model = await pickModel(ch);
-    const auto = S.provider === "openrouter" && !ch.model && !S.models.openrouter;
+    const auto = isAutoFree() && !(ch.model && !Local.known(ch.model)) && !S.models[S.provider];
     let msgs;
     if (mode === "continue") {
       msgs = buildMessages(ch, chat, index + 1);
@@ -438,7 +441,7 @@ How you work:
         let got = false;
         try {
           const text = await AI.chat({
-            settings: S, model, messages: msgs, signal: busy.signal,
+            settings: S, model, messages: msgs, signal: busy.signal, onStatus,
             onToken: t => { const v = stripThink(t); if (!v) return; got = true; onToken && onToken(v); onSpeaker && onSpeaker.feed(v); },
           });
           const clean = stripThink(text).trim();
@@ -541,6 +544,7 @@ How you work:
         const text = await generate(ch, chat, {
           index: i, mode,
           onSpeaker: spk && { feed: t => spk.feed(t) },
+          onStatus: st => { const b = bubble(i); if (b && st) b.innerHTML = `<span class="loading-ai">${esc(st)}</span>`; },
           onToken: t => {
             const stick = nearBottom();
             const b = bubble(i); if (b) b.innerHTML = render1(base + (base ? " " : "") + t);
@@ -687,7 +691,7 @@ How you work:
   // ---------- talk mode: hands-free voice conversation ----------
   function talkMode(ch, chat, { render, runReply }) {
     if (!Voice.supported.stt) return toast("Voice input isn't supported in this browser. On iPhone use Safari; on Android use Chrome.", 6000);
-    if (!keyReady()) return toast("Connect a free AI in Settings first.");
+    if (!keyReady()) return toast("Choose an AI in Settings first.");
     const el = $("#talk");
     let active = true, paused = false, listening = null, misses = 0;
     $("#talkAvatar").innerHTML = avatar(ch, "xxl");
@@ -737,6 +741,7 @@ How you work:
           const reply = await generate(ch, chat, {
             index: i,
             onSpeaker: { feed: t => { spk.feed(t); if (!started) { started = true; status("Speaking…"); } } },
+            onStatus: st => { if (st) status(st); },
             onToken: t => text(Voice.clean(fill(t, ch), false)),
           });
           if (!reply) throw new Error("The model sent an empty reply.");
@@ -759,6 +764,7 @@ How you work:
   }
 
   // ---------- settings ----------
+  const OWN = ["openrouter", "gemini", "custom"];
   async function viewSettings() {
     const P = AI.PROVIDERS;
     app.innerHTML = `
@@ -769,8 +775,8 @@ How you work:
       </header>
       <main class="page form">
         <h2 class="section">AI</h2>
-        <div class="seg" role="radiogroup" aria-label="AI service">
-          ${Object.entries(P).map(([k, p]) => `<label><input type="radio" name="prov" value="${k}" ${S.provider === k ? "checked" : ""}><span>${esc(p.name.split(" (")[0])}</span></label>`).join("")}
+        <div class="seg" role="radiogroup" aria-label="AI">
+          ${[["local", "Built-in"], ["cloud", "Cloud"], ["own", "Own key"]].map(([k, n]) => `<label><input type="radio" name="prov" value="${k}" ${(OWN.includes(S.provider) ? "own" : S.provider) === k ? "checked" : ""}><span>${n}</span></label>`).join("")}
         </div>
         <div id="provBox"></div>
 
@@ -816,17 +822,20 @@ How you work:
     const box = $("#provBox");
     function renderProv() {
       const p = S.provider, info = P[p];
+      if (p === "local") return renderLocal();
+      const ownPick = OWN.includes(p) ? `<label class="field"><span>Service</span><select id="s_own">${OWN.map(k => `<option value="${k}" ${k === p ? "selected" : ""}>${esc(P[k].name)}</option>`).join("")}</select></label>` : "";
       const help = {
+        cloud: `<p class="hint" style="margin-top:0">Smarter models running on Stage's own server, free, with nothing to set up on this device. Works on any phone. The free models have a shared daily limit.</p>`,
         openrouter: `<ol class="steps"><li>Open <a href="${info.keyUrl}" target="_blank" rel="noopener">openrouter.ai/keys</a> and sign in (Google works, no card).</li><li>Tap <b>Create key</b>, copy it and paste it below.</li><li>Only models marked <b>free</b> are listed, so it costs nothing. Free models have a daily message limit.</li><li>Leave <b>Model</b> empty: the app picks the smartest free model and switches automatically when one is busy.</li></ol>`,
         gemini: `<ol class="steps"><li>Open <a href="${info.keyUrl}" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and sign in with Google.</li><li>Tap <b>Create API key</b>, copy it and paste it below.</li><li>Model: <b>gemini-2.5-pro</b> is the smartest (fewer free messages a day); <b>gemini-2.5-flash</b> is fast with more free messages.</li><li>The free tier has a daily limit. Google may use free-tier chats to improve its products.</li></ol>`,
         custom: `<p class="hint">Any OpenAI-compatible server: for example Groq (free key at console.groq.com, address <code>https://api.groq.com/openai/v1</code>), or a model on your own computer with Ollama (<code>http://your-computer:11434/v1</code>) or LM Studio.</p>`,
       }[p];
-      box.innerHTML = `${help}
+      box.innerHTML = `${ownPick}${help}
         ${p === "custom" ? `<label class="field"><span>Server address</span><input id="s_base" value="${esc(S.customBase)}" placeholder="https://…/v1" autocomplete="off" spellcheck="false" inputmode="url"></label>` : ""}
-        <label class="field"><span>API key ${p === "custom" ? "<small>if the server needs one</small>" : ""}</span>
-          <input id="s_key" type="password" value="${esc(S.keys[p])}" placeholder="Paste key" autocomplete="off" spellcheck="false"></label>
+        ${p === "cloud" ? "" : `<label class="field"><span>API key ${p === "custom" ? "<small>if the server needs one</small>" : ""}</span>
+          <input id="s_key" type="password" value="${esc(S.keys[p])}" placeholder="Paste key…" autocomplete="off" spellcheck="false"></label>`}
         <label class="field"><span>Model</span>
-          <span class="combo"><input id="s_model" list="modelList" value="${esc(S.models[p])}" placeholder="${p === "openrouter" ? "Automatic: smartest free model…" : "Model name…"}" autocomplete="off" spellcheck="false">
+          <span class="combo"><input id="s_model" list="modelList" value="${esc(S.models[p])}" placeholder="${isAutoFree() ? "Automatic: smartest free model…" : "Model name…"}" autocomplete="off" spellcheck="false">
           <button class="btn ghost sm" id="loadModels" type="button">Load list</button></span>
           <datalist id="modelList"></datalist></label>
         <select id="modelSel" class="model-sel" hidden aria-label="Available models"></select>
@@ -834,7 +843,8 @@ How you work:
           <select id="s_gf">${[["BLOCK_NONE", "Off (fewest refusals)"], ["BLOCK_ONLY_HIGH", "Low"], ["BLOCK_MEDIUM_AND_ABOVE", "Medium"]].map(([v, n]) => `<option value="${v}" ${S.geminiFilter === v ? "selected" : ""}>${n}</option>`).join("")}</select></label>` : ""}
         <button class="btn ghost" id="test" type="button" style="margin-bottom:20px">Test connection</button>`;
 
-      $("#s_key").onchange = async e => { S.keys[p] = e.target.value.trim(); await saveSettings(); };
+      $("#s_key")?.addEventListener("change", async e => { S.keys[p] = e.target.value.trim(); await saveSettings(); });
+      $("#s_own")?.addEventListener("change", async e => { S.provider = e.target.value; await saveSettings(); renderProv(); });
       $("#s_model").onchange = async e => { S.models[p] = e.target.value.trim(); await saveSettings(); };
       $("#s_base")?.addEventListener("change", async e => { S.customBase = e.target.value.trim(); await saveSettings(); });
       $("#s_gf")?.addEventListener("change", async e => { S.geminiFilter = e.target.value; await saveSettings(); });
@@ -854,6 +864,7 @@ How you work:
         const b = $("#test"); b.disabled = true; b.textContent = "Testing…";
         try {
           if (!keyReady()) throw new Error(p === "custom" ? "Add the server address first." : "Paste your key first.");
+          freeList = null;
           const model = await pickModel({});
           $("#s_model").value = S.models[p] || model;
           const reply = await AI.chat({ settings: { ...S, maxTokens: 30 }, model, messages: [{ role: "user", content: "Reply with just the word: ready" }], onToken: () => {} });
@@ -862,9 +873,47 @@ How you work:
         b.disabled = false; b.textContent = "Test connection";
       };
     }
+    // Built-in AI panel: pick a model, see if it's downloaded, download it now.
+    async function renderLocal() {
+      const cur = S.models.local || Local.defaultModel();
+      const can = await Local.ready();
+      box.innerHTML = can ? `
+        <p class="hint" style="margin-top:0">An open AI that runs entirely on this device: no key, no account, and your chats never leave it. It downloads once, then works even offline. Less clever than Cloud; great for chat and roleplay.</p>
+        <label class="field"><span>Built-in model</span>
+          <select id="s_local">${Local.MODELS.map(m => `<option value="${m.id}" ${m.id === cur ? "selected" : ""}>${esc(m.name)} · ${esc(m.size)} · ${esc(m.note)}</option>`).join("")}</select></label>
+        <p class="hint" id="localState">Checking…</p>
+        <div class="progress" id="localBar" hidden><span></span></div>
+        <button class="btn ghost" id="localGo" type="button" style="margin-bottom:20px">Download now</button>`
+        : `<p class="notice-plain">This device can't run the built-in AI: it needs WebGPU graphics (Chrome or Edge on most laptops and Android phones, Safari on a recent iPhone). Use <b>Cloud</b> instead; it's free too.</p>`;
+      if (!can) return;
+      const state = async () => {
+        const id = $("#s_local").value;
+        const ok = await Local.isCached(id);
+        if ($("#localState")) $("#localState").textContent = ok ? "Downloaded and ready on this device." : `Not downloaded yet. It downloads automatically with your first message, or tap Download now (${Local.MODELS.find(m => m.id === id).size}, use Wi-Fi).`;
+        if ($("#localGo")) $("#localGo").hidden = ok;
+      };
+      state();
+      $("#s_local").onchange = async e => { S.models.local = e.target.value; await saveSettings(); state(); };
+      $("#localGo").onclick = async () => {
+        const b = $("#localGo"), bar = $("#localBar");
+        b.disabled = true; bar.hidden = false;
+        try {
+          await Local.load($("#s_local").value, pr => {
+            bar.firstElementChild.style.transform = `scaleX(${pr.progress})`;
+            $("#localState").textContent = `Downloading… ${Math.round(pr.progress * 100)}%`;
+          });
+          toast("The built-in AI is ready.");
+        } catch (e) { toast(e.message, 7000); }
+        b.disabled = false; bar.hidden = true; state();
+      };
+    }
     renderProv();
 
-    $$('input[name="prov"]').forEach(r => r.onchange = async () => { S.provider = r.value; await saveSettings(); renderProv(); });
+    $$('input[name="prov"]').forEach(r => r.onchange = async () => {
+      S.provider = r.value === "own" ? (OWN.includes(S.lastOwn) ? S.lastOwn : "openrouter") : r.value;
+      if (OWN.includes(S.provider)) S.lastOwn = S.provider;
+      await saveSettings(); renderProv();
+    });
     $("#s_temp").oninput = e => $("#o_temp").textContent = e.target.value;
     $("#s_temp").onchange = async e => { S.temperature = +e.target.value; await saveSettings(); };
     $("#s_max").onchange = async e => { S.maxTokens = +e.target.value; await saveSettings(); };
@@ -938,6 +987,9 @@ How you work:
     const saved = await DB.get("kv", "settings");
     S = JSON.parse(JSON.stringify(DEFAULTS));
     if (saved) S = { ...S, ...saved, keys: { ...S.keys, ...saved.keys }, models: { ...S.models, ...saved.models } };
+    // No usable graphics chip: use Cloud so chatting just works.
+    if (S.provider === "local" && !(await Local.ready())) { S.provider = "cloud"; if (saved) saveSettings(); }
+    if (saved && !saved.v2) { if (OWN.includes(S.provider) && !keyReady()) S.provider = DEFAULTS.provider; S.v2 = true; saveSettings(); }
     route();
   })();
 })();
