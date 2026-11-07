@@ -1,0 +1,127 @@
+// AI providers. All of them can be used for free:
+//  - OpenRouter: free key (no card), models whose id ends in ":free".
+//  - Google Gemini: free key from Google AI Studio.
+//  - Custom: any OpenAI-compatible server (Groq free tier, Ollama / LM Studio on your computer, etc.).
+const AI = (() => {
+  const PROVIDERS = {
+    openrouter: { name: "OpenRouter (free models)", base: "https://openrouter.ai/api/v1", keyUrl: "https://openrouter.ai/keys" },
+    gemini: { name: "Google Gemini (free tier)", base: "https://generativelanguage.googleapis.com/v1beta", keyUrl: "https://aistudio.google.com/apikey" },
+    custom: { name: "Custom (OpenAI-compatible)", base: "", keyUrl: "" },
+  };
+
+  async function listModels(s) {
+    if (s.provider === "openrouter") {
+      const r = await fetch(PROVIDERS.openrouter.base + "/models");
+      if (!r.ok) throw new Error("Could not load models (" + r.status + ")");
+      const j = await r.json();
+      return j.data
+        .filter(m => m.id.endsWith(":free") || (m.pricing && +m.pricing.prompt === 0 && +m.pricing.completion === 0))
+        .map(m => ({ id: m.id, name: m.name || m.id }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
+    if (s.provider === "gemini") {
+      if (!s.keys.gemini) throw new Error("Add your Gemini key first");
+      const r = await fetch(PROVIDERS.gemini.base + "/models?pageSize=200&key=" + encodeURIComponent(s.keys.gemini));
+      if (!r.ok) throw new Error("Could not load models (" + r.status + ")");
+      const j = await r.json();
+      return (j.models || [])
+        .filter(m => (m.supportedGenerationMethods || []).includes("generateContent") && /gemini|gemma/.test(m.name))
+        .map(m => ({ id: m.name.replace(/^models\//, ""), name: m.displayName || m.name }));
+    }
+    const base = (s.customBase || "").replace(/\/$/, "");
+    if (!base) throw new Error("Add the server address first");
+    const r = await fetch(base + "/models", { headers: s.keys.custom ? { Authorization: "Bearer " + s.keys.custom } : {} });
+    if (!r.ok) throw new Error("Could not load models (" + r.status + ")");
+    const j = await r.json();
+    return (j.data || []).map(m => ({ id: m.id, name: m.id }));
+  }
+
+  // Reads a server-sent-events stream and calls onData for each JSON "data:" line.
+  async function readSSE(resp, onData) {
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") return;
+        try { onData(JSON.parse(data)); } catch (e) { if (e.isAIError) throw e; }
+      }
+    }
+  }
+
+  async function errorText(r) {
+    let t = "";
+    try { t = await r.text(); const j = JSON.parse(t); t = (j.error && (j.error.message || j.error)) || j.message || t; } catch {}
+    if (r.status === 401 || r.status === 403) return "The key was refused. Check it in Settings. " + t;
+    if (r.status === 429) return "Free limit reached for now. Wait a minute or pick another free model. " + t;
+    return "Error " + r.status + ": " + String(t).slice(0, 300);
+  }
+
+  // messages: [{role: "system"|"user"|"assistant", content}]
+  async function chat({ settings: s, model, messages, onToken, signal }) {
+    const temperature = +s.temperature;
+    const max_tokens = +s.maxTokens;
+    let full = "";
+    const push = t => { if (t) { full += t; onToken(full); } };
+
+    if (s.provider === "gemini") {
+      const sys = messages.filter(m => m.role === "system").map(m => m.content).join("\n\n");
+      const contents = [];
+      for (const m of messages.filter(m => m.role !== "system")) {
+        const role = m.role === "assistant" ? "model" : "user";
+        const last = contents[contents.length - 1];
+        if (last && last.role === role) last.parts[0].text += "\n\n" + m.content;
+        else contents.push({ role, parts: [{ text: m.content }] });
+      }
+      if (!contents.length || contents[0].role !== "user") contents.unshift({ role: "user", parts: [{ text: "(Begin.)" }] });
+      const th = s.geminiFilter || "BLOCK_NONE";
+      const body = {
+        systemInstruction: { parts: [{ text: sys }] },
+        contents,
+        generationConfig: { temperature, maxOutputTokens: max_tokens },
+        safetySettings: ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]
+          .map(category => ({ category, threshold: th })),
+      };
+      const url = `${PROVIDERS.gemini.base}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(s.keys.gemini || "")}`;
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
+      if (!r.ok) throw new Error(await errorText(r));
+      let blocked = "";
+      await readSSE(r, j => {
+        if (j.promptFeedback && j.promptFeedback.blockReason) blocked = j.promptFeedback.blockReason;
+        const c = j.candidates && j.candidates[0];
+        if (!c) return;
+        (c.content && c.content.parts || []).forEach(p => { if (!p.thought) push(p.text); });
+        if (c.finishReason && !["STOP", "MAX_TOKENS"].includes(c.finishReason)) blocked = c.finishReason;
+      });
+      if (!full && blocked) throw new Error("The model would not answer (" + blocked + "). Try another model or rephrase.");
+      return full;
+    }
+
+    const base = s.provider === "openrouter" ? PROVIDERS.openrouter.base : (s.customBase || "").replace(/\/$/, "");
+    const key = s.keys[s.provider];
+    const headers = { "Content-Type": "application/json" };
+    if (key) headers.Authorization = "Bearer " + key;
+    if (s.provider === "openrouter") { headers["X-Title"] = "Stage"; headers["HTTP-Referer"] = location.origin; }
+    const r = await fetch(base + "/chat/completions", {
+      method: "POST", headers, signal,
+      body: JSON.stringify({ model, messages, temperature, max_tokens, stream: true }),
+    });
+    if (!r.ok) throw new Error(await errorText(r));
+    await readSSE(r, j => {
+      if (j.error) { const e = new Error(j.error.message || "Model error"); e.isAIError = true; throw e; }
+      const d = j.choices && j.choices[0] && j.choices[0].delta;
+      if (d) push(d.content);
+    });
+    return full;
+  }
+
+  return { PROVIDERS, listModels, chat };
+})();

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#121214">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Stage">
+<title>Stage</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="app"></div>
+
+<!-- Talk mode: hands-free voice conversation -->
+<div id="talk" class="talk" hidden>
+  <button class="icon-btn talk-close" id="talkClose" aria-label="End call">✕</button>
+  <div class="talk-avatar" id="talkAvatar"></div>
+  <div class="talk-name" id="talkName"></div>
+  <div class="talk-status" id="talkStatus">Starting…</div>
+  <div class="talk-text" id="talkText" dir="auto"></div>
+  <div class="talk-controls">
+    <button class="btn" id="talkMute">Pause mic</button>
+    <button class="btn danger" id="talkEnd">End</button>
+  </div>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script src="js/db.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/voice.js"></script>
+<script src="js/app.js"></script>
+<script>
+  if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("sw.js"));
+</script>
+</body>
+</html>
