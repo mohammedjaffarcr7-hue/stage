@@ -19,8 +19,12 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (!ALLOWED.includes(origin)) return json(403, { error: { message: "This server only answers the Stage app." } });
 
-  const key = Deno.env.get("OPENROUTER_API_KEY");
+  // Tidy the saved key: stray spaces, quotes, line breaks or a "Bearer " prefix are common paste mistakes.
+  const key = (Deno.env.get("OPENROUTER_API_KEY") ?? "").replace(/^\s*(Bearer\s+)?["']?|["']?\s*$/g, "").replace(/\s+/g, "");
   if (!key) return json(503, { error: { message: "Cloud mode isn't switched on yet: the server has no OPENROUTER_API_KEY." } });
+  if (!key.startsWith("sk-or-")) {
+    return json(503, { error: { message: `The saved OPENROUTER_API_KEY doesn't look like an OpenRouter key (it should start with "sk-or-v1-"; it starts with "${key.slice(0, 3)}…" and is ${key.length} characters long).` } });
+  }
 
   const path = new URL(req.url).pathname.replace(/^.*\/stage-ai/, "");
 
@@ -29,7 +33,8 @@ Deno.serve(async (req) => {
     const j = await r.json();
     const data = (j.data ?? [])
       .filter((m: { id: string }) => m.id.endsWith(":free"))
-      .map((m: { id: string; name: string }) => ({ id: m.id, name: m.name }));
+      .map((m: { id: string; name: string; context_length?: number; created?: number }) =>
+        ({ id: m.id, name: m.name, context_length: m.context_length ?? 0, created: m.created ?? 0 }));
     return json(200, { data });
   }
 
@@ -44,6 +49,9 @@ Deno.serve(async (req) => {
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + key, "X-Title": "Stage", "HTTP-Referer": ALLOWED[0] },
       body: JSON.stringify({ ...body, max_tokens: Math.min(Number(body.max_tokens) || 700, 2500) }),
     });
+    if (r.status === 401) {
+      return json(401, { error: { message: `OpenRouter refused the saved key (${key.length} characters, starts "${key.slice(0, 9)}…"). Make a new key at openrouter.ai/keys and replace OPENROUTER_API_KEY in Supabase.` } });
+    }
     return new Response(r.body, {
       status: r.status,
       headers: { ...cors, "content-type": r.headers.get("content-type") ?? "application/json" },

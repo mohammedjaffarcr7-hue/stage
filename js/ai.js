@@ -80,17 +80,21 @@ const AI = (() => {
     /deepseek.*(v3|chat)/, /qwen3.*(235|480|coder)/, /kimi|moonshot/, /glm-4/, /deepseek/, /llama-4-maverick/, /gemini/,
     /gpt-oss-120b/, /qwen3/, /llama-3\.3-70b/, /mistral-(medium|large|small-3)/, /hermes|nous/, /llama-4/, /gemma-3-27b/, /qwen/, /mistral/,
   ];
+  // Size in billions of parameters from names like "llama-3.3-70b" or "qwen3-235b-a22b" (0 if unknown).
+  const size = m => { const x = m.id.toLowerCase().match(/(\d+(?:\.\d+)?)b(?![a-z])/); return x ? +x[1] : 0; };
   function rankFree(list) {
     const score = m => { const i = RANK.findIndex(r => r.test(m.id.toLowerCase())); return i < 0 ? RANK.length : i; };
     const slow = m => /(^|[-/])r1|reason|think/i.test(m.id) ? 1 : 0; // reasoning models are slow to start talking
-    return list.slice().sort((a, b) => slow(a) - slow(b) || score(a) - score(b));
+    const tiny = m => { const b = size(m); return b && b < 12 ? 1 : 0; };   // small models are noticeably less clever
+    return list.slice().sort((a, b) => tiny(a) - tiny(b) || slow(a) - slow(b) || score(a) - score(b) || size(b) - size(a)
+      || (b.context_length || 0) - (a.context_length || 0) || (b.created || 0) - (a.created || 0));
   }
 
   async function errorText(r) {
     let t = "";
     try { t = await r.text(); const j = JSON.parse(t); t = (j.error && (j.error.message || j.error)) || j.message || t; } catch {}
     if (r.url.startsWith(CLOUD.base)) {
-      if (r.status === 503) return "Cloud mode isn't switched on yet. Use Built-in for now, or finish the one-time Cloud setup (see Settings).";
+      if (r.status === 401 || r.status === 503) return t || "Cloud mode isn't switched on yet. Use Built-in for now.";
       if (r.status === 429) return "The free cloud limit is used up for now. Try again later, or switch to Built-in in Settings.";
     }
     if (r.status === 401 || r.status === 403) return "The key was refused. Check it in Settings. " + t;
