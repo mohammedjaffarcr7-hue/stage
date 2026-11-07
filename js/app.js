@@ -145,7 +145,22 @@ How you work:
     return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   };
 
-  async function saveSettings() { await DB.put("kv", S, "settings"); }
+  async function saveSettings() { await DB.put("kv", S, "settings"); tabs && tabs.postMessage("settings"); }
+
+  // Settings are re-read from storage so every open tab uses the latest choice.
+  async function loadSettings() {
+    const saved = await DB.get("kv", "settings");
+    S = JSON.parse(JSON.stringify(DEFAULTS));
+    if (saved) S = { ...S, ...saved, keys: { ...S.keys, ...saved.keys }, models: { ...S.models, ...saved.models } };
+    let fix = false;
+    // No usable graphics chip: use Cloud so chatting just works.
+    if (S.provider === "local" && !(await Local.ready())) { S.provider = "cloud"; fix = !!saved; }
+    // Settings from before Built-in/Cloud existed, with no key: move to the no-setup default.
+    if (saved && !saved.v2) { if (["openrouter", "gemini", "custom"].includes(S.provider) && !keyReady()) S.provider = DEFAULTS.provider; S.v2 = true; fix = true; }
+    if (fix) await DB.put("kv", S, "settings");
+  }
+  const tabs = "BroadcastChannel" in window ? new BroadcastChannel("stage") : null;
+  if (tabs) tabs.onmessage = () => loadSettings();
   const keyReady = () => S.provider === "local" ? Local.supported : S.provider === "cloud" ? true
     : S.provider === "custom" ? !!S.customBase : !!S.keys[S.provider];
   const isAutoFree = () => S.provider === "openrouter" || S.provider === "cloud";
@@ -425,7 +440,9 @@ How you work:
   // Ask the AI for the reply at position `index` (a new message, or a regeneration).
   // On OpenRouter "automatic" mode, a busy or broken free model is swapped for the next best one.
   async function generate(ch, chat, { index, mode = "new", onToken, onSpeaker, onStatus } = {}) {
-    if (!keyReady()) throw new Error(S.provider === "local" ? "This browser can't run the built-in AI. Switch to Cloud in Settings." : "Add your key in Settings first.");
+    await loadSettings();
+    if (!keyReady()) throw new Error(S.provider === "local" ? "This device can't run the built-in AI. Choose Cloud in Settings."
+      : `Settings has "Own key → ${AI.PROVIDERS[S.provider].name}" selected, but no key is saved. Choose Cloud (or Built-in) in Settings.`);
     let model = await pickModel(ch);
     const auto = isAutoFree() && !(ch.model && !Local.known(ch.model)) && !S.models[S.provider];
     let msgs;
@@ -984,12 +1001,7 @@ How you work:
   // ---------- start ----------
   (async () => {
     if (!(await DB.get("chars", "assistant"))) await DB.put("chars", { ...ASSISTANT, created: Date.now() });
-    const saved = await DB.get("kv", "settings");
-    S = JSON.parse(JSON.stringify(DEFAULTS));
-    if (saved) S = { ...S, ...saved, keys: { ...S.keys, ...saved.keys }, models: { ...S.models, ...saved.models } };
-    // No usable graphics chip: use Cloud so chatting just works.
-    if (S.provider === "local" && !(await Local.ready())) { S.provider = "cloud"; if (saved) saveSettings(); }
-    if (saved && !saved.v2) { if (OWN.includes(S.provider) && !keyReady()) S.provider = DEFAULTS.provider; S.v2 = true; saveSettings(); }
+    await loadSettings();
     route();
   })();
 })();
