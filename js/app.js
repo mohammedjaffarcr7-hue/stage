@@ -842,6 +842,7 @@ How you work:
           <label class="btn ghost">Restore<input type="file" id="imp" accept="application/json,.json" hidden></label>
         </div>
         <button class="btn danger wide" id="wipe">Erase everything</button>
+        <p class="hint" style="margin-top:24px;text-align:center">Stage version 7 · AI: ${esc({ local: "Built-in", cloud: "Cloud" }[S.provider] || "Own key")}</p>
       </main>`;
 
     const box = $("#provBox");

@@ -16,7 +16,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Sans+Arabic:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/app.css?v=7">
 </head>
 <body>
 <div id="app"></div>
@@ -36,13 +36,22 @@
 
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-<script src="js/db.js"></script>
-<script src="js/local.js"></script>
-<script src="js/ai.js"></script>
-<script src="js/voice.js"></script>
-<script src="js/app.js"></script>
+<script src="js/db.js?v=7"></script>
+<script src="js/local.js?v=7"></script>
+<script src="js/ai.js?v=7"></script>
+<script src="js/voice.js?v=7"></script>
+<script src="js/app.js?v=7"></script>
 <script>
-  if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("sw.js"));
+  // Offline support. When a new version of Stage is published, switch to it straight away (reload once).
+  if ("serviceWorker" in navigator) {
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!hadController || reloaded) return;
+      reloaded = true; location.reload();
+    });
+    addEventListener("load", () => navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(r => r.update()).catch(() => {}));
+  }
 </script>
 </body>
 </html>
